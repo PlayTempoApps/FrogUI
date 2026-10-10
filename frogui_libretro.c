@@ -1450,6 +1450,80 @@ static const char* get_basename(const char *path) {
     return b ? b+1 : path;
 }
 
+
+/* MAME game title mapping */
+#define MAME_TITLES_FILE SDCARD_BASE "/frogui/MAME_TITLES.tsv"
+
+typedef struct {
+    char *rom;
+    char *title;
+} MameTitle;
+
+static MameTitle *mame_titles = NULL;
+static size_t mame_title_count = 0;
+
+static void mame_titles_free(void) {
+    for (size_t i = 0; i < mame_title_count; i++) {
+        free(mame_titles[i].rom);
+        free(mame_titles[i].title);
+    }
+    free(mame_titles);
+    mame_titles = NULL;
+    mame_title_count = 0;
+}
+
+static void mame_titles_load(void) {
+    FILE *f = fopen(MAME_TITLES_FILE, "r");
+    if (!f) return;
+
+    char line[1024];
+    size_t capacity = 0;
+
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab++ = '\0';
+        tab[strcspn(tab, "\r\n")] = '\0';
+        if (!line[0] || !tab[0]) continue;
+
+        if (mame_title_count == capacity) {
+            size_t new_capacity = capacity ? capacity * 2 : 256;
+            MameTitle *next = realloc(
+                mame_titles, new_capacity * sizeof *next);
+            if (!next) break;
+            mame_titles = next;
+            capacity = new_capacity;
+        }
+
+        char *rom = strdup(line);
+        char *title = strdup(tab);
+        if (!rom || !title) {
+            free(rom);
+            free(title);
+            break;
+        }
+
+        mame_titles[mame_title_count].rom = rom;
+        mame_titles[mame_title_count].title = title;
+        mame_title_count++;
+    }
+    fclose(f);
+}
+
+static const char *mame_title_lookup(const char *rom) {
+    size_t left = 0, right = mame_title_count;
+
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+        int cmp = strcasecmp(rom, mame_titles[mid].rom);
+
+        if (cmp == 0) return mame_titles[mid].title;
+        if (cmp < 0) right = mid;
+        else left = mid + 1;
+    }
+    return NULL;
+}
+
 static const char* get_console_folder(const char *path) {
     size_t roms_len = strlen(ROMS_PATH);
     if (strncmp(path, ROMS_PATH, roms_len) == 0) {
@@ -4262,6 +4336,7 @@ void retro_init(void) {
     }
     strncpy(current_path, g_roms_path, MAX_PATH_LEN - 1);
     current_path[MAX_PATH_LEN - 1] = '\0';
+    mame_titles_load();
     scan_directory(current_path);
     dbg("scan_directory done");
     /* Recents reuses entries[] for its own rows. Keep the freshly-built Games
@@ -4274,6 +4349,7 @@ void retro_init(void) {
 }
 
 void retro_deinit(void) {
+    mame_titles_free();
     for (int i = 0; i < SYSTEM_ICON_CACHE_N; i++) {
         free(system_icons[i].pixels);
         free(system_icons[i].alpha);
@@ -4867,6 +4943,15 @@ void retro_run(void) {
                     disp[sizeof disp - 1] = '\0';
                     char *dot = strrchr(disp, '.');
                     if (dot && dot != disp) { *dot = '\0'; shown = disp; }
+                }
+                /* Show MAME titles without changing ROM filenames. */
+                if (!entries[idx].is_dir && !viewing_recents &&
+                    !viewing_favourites && !viewing_search) {
+                    const char *folder = get_console_folder(current_path);
+                    if (folder && !strcasecmp(folder, "m2k")) {
+                        const char *title = mame_title_lookup(entries[idx].name);
+                        if (title) shown = title;
+                    }
                 }
                 if (settings_center_text && settings_style == STYLE_VERTICAL &&
                     strcmp(current_path, ROMS_PATH) == 0)
